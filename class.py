@@ -44,7 +44,7 @@ h1, h2, h3 {
 # --------------------------
 # 2) LOAD THE TRAINED MODEL
 # --------------------------
-MODEL_PATH = r"C:\Users\daniel.tolmie\OneDrive - Medifab\Desktop\parts\final_model.keras"
+MODEL_PATH = "final_model.keras"
 
 @st.cache_resource
 def load_model():
