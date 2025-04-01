@@ -30,6 +30,12 @@ h1, h2, h3 {
     border-radius: 8px !important;
     border: none !important;
 }
+.stCameraInput > label > div {
+    background-color: #0072C6 !important;
+    color: white !important;
+    border-radius: 8px;
+    padding: 8px 16px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +57,7 @@ model = load_model()
 st.write("**Model output shape:**", model.output_shape)
 
 # -------------------------
-# 3) DEFINE CLASS LABELS
+# 3) DEFINE CLASS LABELS (9 codes)
 # -------------------------
 class_labels = [
     "1568-5070-L99",
@@ -73,34 +79,33 @@ if len(class_labels) != model.output_shape[-1]:
 # --------------------------
 class PartClassifier(VideoTransformerBase):
     def __init__(self):
-        self.model = model  # Already loaded via cache
+        self.model = model  # Loaded from cache
         self.class_labels = class_labels
 
     def transform(self, frame):
-        # Get the video frame in BGR format
+        # Convert the frame from BGR to RGB
         img = frame.to_ndarray(format="bgr24")
-        # Convert BGR to RGB
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # Resize image to model input size (300x300)
+        # Resize to 300x300 (model input size)
         img_resized = cv2.resize(img_rgb, (300, 300))
-        # Preprocess using EfficientNet's preprocess_input (scales pixels to [-1, 1])
+        # Preprocess using EfficientNet's preprocess_input (scales to [-1,1])
         img_preprocessed = preprocess_input(img_resized.astype("float32"))
-        # Expand dimensions to create a batch (1, 300, 300, 3)
+        # Expand dims to create batch dimension
         img_expanded = np.expand_dims(img_preprocessed, axis=0)
-
-        # Run prediction
+        
+        # Get predictions
         preds = self.model.predict(img_expanded)[0]
         predicted_idx = np.argmax(preds)
         predicted_label = self.class_labels[predicted_idx]
         confidence = preds[predicted_idx] * 100
-
+        
         # Overlay prediction text on the original BGR image
         text = f"{predicted_label}: {confidence:.1f}%"
-        cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2, cv2.LINE_AA)
+        cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
         return img
 
 # --------------------------
-# 5) LAUNCH LIVE STREAM
+# 5) LAUNCH LIVE VIDEO STREAM
 # --------------------------
 webrtc_streamer(
     key="part-classifier",
