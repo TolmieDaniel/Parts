@@ -1,17 +1,17 @@
 import streamlit as st
 import tensorflow as tf
 import numpy as np
-import pandas as pd
 import cv2
 from PIL import Image
-import altair as alt
 from tensorflow.keras.applications.efficientnet import preprocess_input
+from streamlit_webrtc import VideoTransformerBase, webrtc_streamer
+import av
 
 # -------------------------------
 # 1) PAGE CONFIG & CUSTOM STYLING
 # -------------------------------
 st.set_page_config(
-    page_title="Part Classifier",
+    page_title="Live Part Classifier",
     layout="wide",
     page_icon="🔧"
 )
@@ -32,19 +32,17 @@ h1, h2, h3 {
     border-radius: 8px !important;
     border: none !important;
 }
-.stCameraInput > label > div {
-    background-color: #0072C6 !important;
-    color: white !important;
-    border-radius: 8px;
-    padding: 8px 16px;
-}
 </style>
 """, unsafe_allow_html=True)
 
+st.title("🔧 Live Part Classifier")
+st.subheader("Live predictions using your camera")
+
 # --------------------------
-# 2) LOAD THE TRAINED MODEL
+# 2) LOAD THE TRAINED MODEL & DEFINE LABELS
 # --------------------------
-MODEL_PATH = "final_model.keras"
+# Use a relative path if the model is in the same repo folder.
+MODEL_PATH = "final_model_effB3.keras"
 
 @st.cache_resource
 def load_model():
@@ -54,10 +52,7 @@ def load_model():
 model = load_model()
 st.write("**Model output shape:**", model.output_shape)
 
-# -------------------------
-# 3) DEFINE CLASS LABELS
-# -------------------------
-# Use the exact list as produced during training. For 9 classes:
+# Define the 9 class labels (make sure the order matches how your dataset was loaded)
 class_labels = [
     "1568-5070-L99",
     "1568-5072-L00",
@@ -73,119 +68,43 @@ class_labels = [
 if len(class_labels) != model.output_shape[-1]:
     st.error(f"Mismatch: Model outputs {model.output_shape[-1]} classes but class_labels has {len(class_labels)} items.")
 
-# ----------------------------
-# 4) SIDEBAR SETTINGS & GUIDE
-# ----------------------------
-st.sidebar.title("Settings")
-CONFIDENCE_THRESHOLD = st.sidebar.slider(
-    "Confidence Threshold (%)",
-    min_value=0,
-    max_value=100,
-    value=70,
-    step=1
+# --------------------------
+# 3) DEFINE A VIDEO TRANSFORMER FOR LIVE PREDICTION
+# --------------------------
+class PartClassifier(VideoTransformerBase):
+    def __init__(self):
+        # Load the model and define labels once when the transformer is instantiated.
+        self.model = model  # Already loaded by st.cache_resource
+        self.class_labels = class_labels
+
+    def transform(self, frame: av.VideoFrame) -> np.ndarray:
+        # Convert frame (BGR) to NumPy array
+        img = frame.to_ndarray(format="bgr24")
+        # Convert BGR to RGB
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Resize image to 300x300 (model input size)
+        img_resized = cv2.resize(img_rgb, (300, 300))
+        # Preprocess using EfficientNet's preprocess_input (scales pixels to [-1,1])
+        img_preprocessed = preprocess_input(img_resized.astype("float32"))
+        # Expand dimensions to create a batch
+        img_expanded = np.expand_dims(img_preprocessed, axis=0)
+        
+        # Predict the class probabilities
+        preds = self.model.predict(img_expanded)[0]
+        predicted_idx = np.argmax(preds)
+        predicted_label = self.class_labels[predicted_idx]
+        confidence = preds[predicted_idx] * 100
+        
+        # Overlay the prediction text on the frame
+        text = f"{predicted_label}: {confidence:.1f}%"
+        cv2.putText(img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        return img
+
+# --------------------------
+# 4) LAUNCH THE LIVE VIDEO STREAM
+# --------------------------
+webrtc_streamer(
+    key="part-classifier",
+    video_transformer_factory=PartClassifier,
+    media_stream_constraints={"video": True, "audio": False}
 )
-st.sidebar.write(f"Images with confidence below {CONFIDENCE_THRESHOLD}% will be marked as 'Not recognized'.")
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Instructions")
-st.sidebar.markdown("""
-1. Choose **Camera** or **Upload** tab.
-2. Capture or upload an image.
-3. The model predicts the part code and shows confidence.
-4. Check the bar chart for class probabilities.
-""")
-
-# --------------------------
-# 5) PREDICTION FUNCTION
-# --------------------------
-def predict_part(image: Image.Image):
-    """
-    Preprocess the image and perform prediction.
-    Returns (predicted_label, confidence, all_confidences).
-    """
-    # Convert PIL image to NumPy array
-    img_array = np.array(image)
-    
-    # Ensure image has 3 channels
-    if len(img_array.shape) == 2:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
-    elif img_array.shape[2] == 4:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
-    
-    # Resize image to 300x300 (model expects 300x300)
-    TARGET_SIZE = (300, 300)
-    img_resized = cv2.resize(img_array, TARGET_SIZE)
-    # Use the same preprocessing as during training:
-    img_preprocessed = preprocess_input(img_resized.astype("float32"))
-    
-    # Expand dims to create batch dimension
-    img_expanded = np.expand_dims(img_preprocessed, axis=0)
-    
-    with st.spinner("Predicting..."):
-        preds = model.predict(img_expanded)[0]  # shape: (num_classes,)
-    
-    predicted_idx = np.argmax(preds)
-    if predicted_idx >= len(class_labels):
-        st.error("Predicted index out of range. Check your class_labels.")
-        predicted_label = "Unknown"
-    else:
-        predicted_label = class_labels[predicted_idx]
-    
-    confidence = preds[predicted_idx] * 100
-    all_confidences = preds * 100
-    return predicted_label, confidence, all_confidences
-
-# -------------------------------
-# 6) MAIN LAYOUT: TABS FOR CAMERA / UPLOAD
-# -------------------------------
-st.title("🔧 Part Classifier")
-st.subheader("Identify parts using live camera or file upload")
-
-tab_camera, tab_upload = st.tabs(["📷 Camera", "📁 Upload"])
-
-with tab_camera:
-    st.header("Live Camera")
-    camera_image = st.camera_input("Take a photo")
-    
-    if camera_image is not None:
-        image = Image.open(camera_image)
-        st.image(image, caption="Captured Image", use_container_width=True)
-        label, conf, all_confs = predict_part(image)
-        if conf < CONFIDENCE_THRESHOLD:
-            st.error(f"**Not recognized** (Confidence {conf:.2f}%).")
-        else:
-            st.success(f"**Predicted Part Code:** {label}")
-            st.info(f"Confidence: {conf:.2f}%")
-        df = pd.DataFrame({"Class": class_labels, "Confidence": all_confs})
-        df = df.sort_values("Confidence", ascending=False)
-        st.markdown("**Confidence for All Classes:**")
-        chart = alt.Chart(df).mark_bar().encode(
-            x=alt.X("Confidence:Q", title="Confidence (%)"),
-            y=alt.Y("Class:N", sort="-x"),
-            color="Class:N"
-        ).properties(height=300)
-        st.altair_chart(chart, use_container_width=True)
-
-with tab_upload:
-    st.header("Upload Image")
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_container_width=True)
-        label, conf, all_confs = predict_part(image)
-        if conf < CONFIDENCE_THRESHOLD:
-            st.error(f"**Not recognized** (Confidence {conf:.2f}%).")
-        else:
-            st.success(f"**Predicted Part Code:** {label}")
-            st.info(f"Confidence: {conf:.2f}%")
-        df = pd.DataFrame({"Class": class_labels, "Confidence": all_confs})
-        df = df.sort_values("Confidence", ascending=False)
-        st.markdown("**Confidence for All Classes:**")
-        chart = alt.Chart(df).mark_bar().encode(
-            x=alt.X("Confidence:Q", title="Confidence (%)"),
-            y=alt.Y("Class:N", sort="-x"),
-            color="Class:N"
-        ).properties(height=300)
-        st.altair_chart(chart, use_container_width=True)
-
-st.markdown("---")
-st.markdown("<center>Made by DANIEL T - Powered by Streamlit & TensorFlow</center>", unsafe_allow_html=True)
